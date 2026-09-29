@@ -11,6 +11,8 @@ const {
   toJsonl,
   normalizeWindow,
   classifyWindow,
+  normalizePairingParams,
+  analyzeOperationPairs,
 } = require('../lib/timesync');
 
 const A = (iso) => Date.parse(iso);
@@ -419,4 +421,258 @@ test('classifyWindow 空时间线返回全零计数', () => {
   const { counts, results } = classifyWindow([], 0, 1000);
   assert.deepEqual(counts, { hit: 0, partial: 0, miss: 0 });
   assert.deepEqual(results, []);
+});
+
+/* ---------- 操作配对 / 跨设备耗时：分组、跳过与区间耗时 ---------- */
+
+/** 构造与 mergeTimeline 同构的时间线条目（区间为点或 [lo, hi]）。 */
+function mkEntry(device, event, lo, hi) {
+  const mid = lo === hi ? lo : (lo + hi) / 2;
+  return {
+    device,
+    rawTime: mid,
+    correctedTime: mid,
+    uncertaintyMs: (hi - lo) / 2,
+    correctedEarliest: lo,
+    correctedLatest: hi,
+    orderUncertain: false,
+    extrapolated: null,
+    event,
+  };
+}
+
+test('normalizePairingParams 校验字段名空缺与两状态值相同', () => {
+  assert.throws(() => normalizePairingParams({}), /请填写关联字段名/);
+  assert.throws(() => normalizePairingParams({ linkField: '  ' }), /请填写关联字段名/);
+  assert.throws(
+    () => normalizePairingParams({ linkField: 'opId' }),
+    /请填写状态字段名/
+  );
+  assert.throws(
+    () => normalizePairingParams({ linkField: 'opId', statusField: 'phase' }),
+    /请填写开始状态值/
+  );
+  assert.throws(
+    () => normalizePairingParams({ linkField: 'opId', statusField: 'phase', startValue: 'S' }),
+    /请填写结束状态值/
+  );
+  assert.throws(
+    () => normalizePairingParams({ linkField: 'opId', statusField: 'phase', startValue: 'S', endValue: 'S' }),
+    /不能相同/
+  );
+  // 字段名去空白；状态值按字符串比较，"1" 与 1 视为同一状态
+  assert.throws(
+    () => normalizePairingParams({ linkField: 'opId', statusField: 'phase', startValue: 1, endValue: '1' }),
+    /不能相同/
+  );
+  // 状态值不做去空白，"S " 与 "S" 是两个合法的不同状态
+  const p = normalizePairingParams({
+    linkField: ' opId ', statusField: 'phase', startValue: 'S ', endValue: 'E',
+  });
+  assert.deepEqual(p, { linkField: 'opId', statusField: 'phase', startValue: 'S ', endValue: 'E' });
+});
+
+test('同组恰有一条开始和一条结束才配对，缺一端为未配对', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 1000),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 2000, 2000),
+    mkEntry('A', { opId: 'only-start', phase: 'START' }, 3000, 3000),
+    mkEntry('B', { opId: 'only-end', phase: 'END' }, 4000, 4000),
+  ];
+  const { groups, counts, skipped } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.equal(skipped, 0);
+  assert.deepEqual(counts, { paired: 1, unpaired: 2, ambiguous: 0, conflict: 0 });
+  assert.equal(groups.length, 3);
+  assert.equal(groups[0].status, 'paired');
+  assert.equal(groups[0].durationMinMs, 1000);
+  assert.equal(groups[0].durationMaxMs, 1000);
+  assert.equal(groups[0].crossDevice, true);
+  assert.equal(groups[1].status, 'unpaired');
+  assert.equal(groups[1].startCount, 1);
+  assert.equal(groups[1].endCount, 0);
+  assert.equal(groups[1].durationMinMs, null);
+  assert.equal(groups[2].status, 'unpaired');
+  assert.equal(groups[2].startCount, 0);
+  assert.equal(groups[2].endCount, 1);
+});
+
+test('任一端重复标歧义，不输出时长（含 1 对多与多对多）', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 1000),
+    mkEntry('B', { opId: 'x', phase: 'START' }, 1100, 1100),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 2000, 2000),
+    mkEntry('A', { opId: 'y', phase: 'START' }, 1000, 1000),
+    mkEntry('B', { opId: 'y', phase: 'START' }, 1100, 1100),
+    mkEntry('A', { opId: 'y', phase: 'END' }, 2000, 2000),
+    mkEntry('B', { opId: 'y', phase: 'END' }, 2100, 2100),
+  ];
+  const { groups, counts } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.deepEqual(counts, { paired: 0, unpaired: 0, ambiguous: 2, conflict: 0 });
+  for (const g of groups) {
+    assert.equal(g.status, 'ambiguous');
+    assert.equal(g.durationMinMs, null);
+    assert.equal(g.durationMaxMs, null);
+  }
+  assert.equal(groups[0].startCount, 2);
+  assert.equal(groups[0].endCount, 1);
+  assert.equal(groups[1].startCount, 2);
+  assert.equal(groups[1].endCount, 2);
+});
+
+test('缺字段或状态不匹配的事件跳过并分类计数', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 1000),
+    mkEntry('A', { phase: 'END' }, 2000, 2000), // 缺关联字段
+    mkEntry('A', { opId: 'y' }, 3000, 3000), // 缺状态字段
+    mkEntry('B', { opId: 'z', phase: 'RETRY' }, 4000, 4000), // 状态不匹配
+    mkEntry('B', { opId: 'x', phase: 'END' }, 5000, 5000),
+  ];
+  const { groups, counts, scanned, skipped, skippedMissingField, skippedStatusMismatch } =
+    analyzeOperationPairs(entries, {
+      linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+    });
+  assert.equal(scanned, 5);
+  assert.equal(skipped, 3);
+  assert.equal(skippedMissingField, 2);
+  assert.equal(skippedStatusMismatch, 1);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].status, 'paired');
+  assert.deepEqual(counts, { paired: 1, unpaired: 0, ambiguous: 0, conflict: 0 });
+});
+
+test('校正区间求耗时：区间分离时最短/最长为确定范围', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 1200),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 2000, 2500),
+  ];
+  const { groups } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  // 最短 = 2000 − 1200 = 800；最长 = 2500 − 1000 = 1500
+  assert.equal(groups[0].status, 'paired');
+  assert.equal(groups[0].durationMinMs, 800);
+  assert.equal(groups[0].durationMaxMs, 1500);
+});
+
+test('区间相交时最短保留为零，最长仍给上界', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 2000),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 1500, 2600),
+  ];
+  const { groups } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  // max(0, 1500 − 2000) = 0；2600 − 1000 = 1600
+  assert.equal(groups[0].status, 'paired');
+  assert.equal(groups[0].durationMinMs, 0);
+  assert.equal(groups[0].durationMaxMs, 1600);
+});
+
+test('边界相接不算冲突：结束最早等于开始最晚时最短为 0', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 2000),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 2000, 3000),
+  ];
+  const { groups, counts } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.equal(counts.conflict, 0);
+  assert.equal(groups[0].status, 'paired');
+  assert.equal(groups[0].durationMinMs, 0);
+  assert.equal(groups[0].durationMaxMs, 2000);
+});
+
+test('结束最晚严格早于开始最早时标时间冲突且不输出时长', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 5000, 6000),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 3000, 4000),
+  ];
+  const { groups, counts } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.equal(groups[0].status, 'conflict');
+  assert.equal(groups[0].durationMinMs, null);
+  assert.equal(groups[0].durationMaxMs, null);
+  assert.deepEqual(counts, { paired: 0, unpaired: 0, ambiguous: 0, conflict: 1 });
+});
+
+test('同设备配对 crossDevice=false，且组按首次出现顺序输出', () => {
+  const entries = [
+    mkEntry('A', { opId: 'second', phase: 'START' }, 2000, 2000),
+    mkEntry('A', { opId: 'first', phase: 'START' }, 1000, 1000),
+    mkEntry('A', { opId: 'first', phase: 'END' }, 1500, 1500),
+    mkEntry('A', { opId: 'second', phase: 'END' }, 2600, 2600),
+  ];
+  const { groups } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.deepEqual(groups.map((g) => g.linkValue), ['second', 'first']);
+  assert.equal(groups[0].crossDevice, false);
+  assert.equal(groups[0].durationMinMs, 600);
+});
+
+test('关联值支持数字与对象；状态值按字符串匹配（数字状态 1 匹配 "1"）', () => {
+  const entries = [
+    mkEntry('A', { opId: 42, code: 1 }, 1000, 1000),
+    mkEntry('B', { opId: 42, code: '2' }, 2000, 2000),
+    mkEntry('A', { opId: { a: 1 }, code: '1' }, 3000, 3000),
+    mkEntry('B', { opId: { a: 1 }, code: 2 }, 4000, 4000),
+  ];
+  const { groups, skipped } = analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'code', startValue: '1', endValue: 2,
+  });
+  assert.equal(skipped, 0);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].linkValue, 42);
+  assert.equal(groups[0].durationMaxMs, 1000);
+  assert.deepEqual(groups[1].linkValue, { a: 1 });
+  assert.equal(groups[1].durationMaxMs, 1000);
+});
+
+test('analyzeOperationPairs 不改动传入时间线条目；空时间线返回零结果', () => {
+  const entries = [
+    mkEntry('A', { opId: 'x', phase: 'START' }, 1000, 1200),
+    mkEntry('B', { opId: 'x', phase: 'END' }, 2000, 2200),
+  ];
+  const before = JSON.stringify(entries);
+  analyzeOperationPairs(entries, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.equal(JSON.stringify(entries), before);
+
+  const empty = analyzeOperationPairs([], {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.deepEqual(empty.groups, []);
+  assert.deepEqual(empty.counts, { paired: 0, unpaired: 0, ambiguous: 0, conflict: 0 });
+  assert.equal(empty.skipped, 0);
+});
+
+test('配对分析直接作用于 mergeTimeline 的时间线（端到端复用既有合并结果）', () => {
+  const merged = mergeTimeline([
+    {
+      name: 'dev-A',
+      anchors: [{ local: 0, ref: 0 }, { local: 10000, ref: 10000 }],
+      events: [{ ts: 1000, opId: 'job', phase: 'START' }],
+    },
+    {
+      name: 'dev-B',
+      anchors: [{ local: 0, ref: 1000 }, { local: 10000, ref: 11000 }],
+      events: [{ ts: 1000, opId: 'job', phase: 'END' }],
+    },
+  ]);
+  const { groups } = analyzeOperationPairs(merged.timeline, {
+    linkField: 'opId', statusField: 'phase', startValue: 'START', endValue: 'END',
+  });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].status, 'paired');
+  // A 校正 1000，B 校正 2000，均为点区间 -> 耗时 1000 ms
+  assert.equal(groups[0].durationMinMs, 1000);
+  assert.equal(groups[0].durationMaxMs, 1000);
+  assert.equal(groups[0].start.device, 'dev-A');
+  assert.equal(groups[0].end.device, 'dev-B');
 });

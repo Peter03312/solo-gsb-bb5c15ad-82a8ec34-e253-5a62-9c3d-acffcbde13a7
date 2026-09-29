@@ -22,6 +22,11 @@
   与窗口的相交关系分为**确定命中**（完整区间在窗内）、**可能命中**（仅部分相交）、
   **未命中**三类并分别计数；起止缺失、无法解析或起点晚于终点时给出中文错误，
   且不改动上次检索结果
+- 操作配对 / 跨设备耗时：输入日志中的**关联字段名**、**状态字段名**及**开始/结束
+  两种状态值**，在既有校时合并结果上按关联值把同一次操作的开始/结束事件配成一对，
+  用两端的校正区间计算耗时范围；缺一端标“未配对”、任一端重复标“歧义”、结束区间
+  整体早于开始标“时间冲突”，均不输出时长；缺字段或状态不匹配的事件跳过并计数；
+  字段名空缺或两状态值相同时报错并保留上次分析结果
 - 导出：一键下载合并后的 JSONL（含原始时间、校正区间、顺序不确定标记与原始事件）
 - 时间字段：默认自动探测 `ts` / `time` / `timestamp`，也可逐设备指定字段名
 
@@ -63,7 +68,24 @@ npm test         # 运行核心校时逻辑单元测试
    “确定命中 / 可能命中 / 未命中”徽标，并显示三类计数；边界相接算相交。
    起止缺失、无法解析或起点晚于终点时仅提示中文错误，上次检索结果保持不变；
    点击 **清除** 可移除检索标记（输入框内容保留）。重新“校时并合并”后检索结果自动失效。
-6. 点击 **导出合并 JSONL** 下载结果，每行格式：
+6. 在统一时间线下方的 **操作配对 / 跨设备耗时** 中填写四个输入框后回车或点击
+   **分析配对**（`timeline` 直接复用最近一次合并结果，不重新校时）：
+   - **关联字段名**：事件中标识同一次操作的字段（如 `opId`）；**状态字段名**：
+     标识开始/结束的字段（如 `phase`）；**开始状态值 / 结束状态值**：分别对应
+     一次操作的开始与结束（如 `START` / `END`，按字符串比较，两者不能相同）。
+   - 系统按关联值分组，**同组恰有一条开始和一条结束才配对**：缺一端标
+     **未配对**，开始或结束任一端出现多条标 **歧义**（不输出时长）；跨设备的
+     配对会额外加“跨设备”徽标。
+   - 配对成功后以两端的**校正区间**计算持续时间（毫秒）：
+     **最短 = max(0, 结束最早 − 开始最晚)**，**最长 = 结束最晚 − 开始最早**；
+     两端区间相交时最短保留为 0（耗时可能为零）；若**结束最晚早于开始最早**
+     （严格小于）则标 **时间冲突**，不输出时长。
+   - **缺字段**（关联或状态字段缺失）或**状态不匹配**（状态值既不是开始也不是
+     结束）的事件跳过并分类计数；汇总条显示各组状态计数与跳过数，表格逐组展示
+     关联值、状态、开始/结束端设备与校正区间、耗时范围。
+   - 字段名空缺或两状态值相同时仅提示中文错误，**上次分析结果保留不变**；点击
+     **清除** 可清空结果（输入内容保留）。重新“校时并合并”后配对结果自动失效。
+7. 点击 **导出合并 JSONL** 下载结果，每行格式：
 
 ```json
 {
@@ -103,12 +125,17 @@ npm test         # 运行核心校时逻辑单元测试
 - 顺序不确定：统一时间线按中心值 `R` 排序；排序后若相邻两事件满足
   `前一条的最晚值 ≥ 后一条的最早值`（区间相交），则这一对两侧事件都打上
   `orderUncertain` 标记——凭现有校时精度无法断定它们的先后。
+- 操作配对耗时：设某次操作开始事件的校正区间为 `[s₋, s₊]`、结束事件为
+  `[e₋, e₊]`，则持续时间的可能范围为区间差 `[e₋−s₊, e₊−s₋]`，其中
+  **最短 = max(0, e₋−s₊)**（区间相交时保留耗时为 0 的可能）、
+  **最长 = e₊−s₋**；当 `e₊ < s₋`（结束区间整体严格早于开始区间）时时间上
+  不可能成立，标为时间冲突，不输出时长。
 
 ## 项目结构
 
 ```
-server.js            Express 服务（静态页面 + /api/sync 等接口）
-lib/timesync.js      核心校时逻辑（锚点校验、分段线性映射、合并、导出）
+server.js            Express 服务（静态页面 + /api/sync、/api/window-search、/api/operation-duration 等接口）
+lib/timesync.js      核心校时逻辑（锚点校验、分段线性映射、合并、时间窗分类、操作配对、导出）
 public/              原生前端（index.html / app.js / style.css）
 test/                node:test 单元测试
 Dockerfile           单阶段生产镜像（node:20-alpine）
@@ -122,6 +149,7 @@ docker-compose.yml   单服务编排，映射 8080 端口
 | POST | `/api/sync` | 提交设备列表（锚点 + JSONL 原文），返回合并时间线与导出 JSONL |
 | POST | `/api/parse-anchors` | 解析锚点文本（前端辅助） |
 | POST | `/api/window-search` | 时间窗检索：按事件校正区间与窗口的相交关系分类计数 |
+| POST | `/api/operation-duration` | 操作配对：按关联字段配对开始/结束事件，按校正区间求跨设备耗时范围 |
 | GET | `/api/health` | 健康检查 |
 
 `POST /api/sync` 请求体示例：
@@ -162,3 +190,102 @@ ISO 8601 或 epoch 毫秒，`timeline` 取 `/api/sync` 响应中的时间线数�
 `classes` 与提交的 `timeline` 同序：`hit` 确定命中（事件区间完整在窗内）、
 `partial` 可能命中（仅部分相交）、`miss` 未命中。起止缺失、无法解析或起点晚于
 终点时返回 `400` 及中文错误说明。
+
+### `POST /api/operation-duration`（操作配对 / 跨设备耗时）
+
+请求体为 `{ linkField, statusField, startValue, endValue, timeline }`：`timeline`
+取 `/api/sync` 响应中的时间线数组（复用既有合并结果，不重新校时）；状态值按字符串
+匹配，`startValue` 与 `endValue` 必须给出且不能相同。调用示例（curl，配合
+[jq](https://jqlang.github.io/jq/) 把校时结果的时间线传给配对接口）：
+
+```bash
+# 1) 校时并合并，把完整响应存下来
+curl -s -X POST http://localhost:8080/api/sync \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "devices": [{
+      "name": "switch-A",
+      "anchors": [
+        {"local": "2026-09-21T10:00:00Z", "ref": "2026-09-21T10:00:02Z", "err": 100},
+        {"local": "2026-09-21T10:10:00Z", "ref": "2026-09-21T10:10:02Z", "err": 100}
+      ],
+      "eventsText": "{\"ts\":\"2026-09-21T10:00:05Z\",\"opId\":\"J-1\",\"phase\":\"START\"}\n{\"ts\":\"2026-09-21T10:02:05Z\",\"opId\":\"J-1\",\"phase\":\"END\"}"
+    }]
+  }' > /tmp/sync.json
+
+# 2) 在合并时间线上做配对分析
+curl -s -X POST http://localhost:8080/api/operation-duration \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -c '{linkField:"opId", statusField:"phase", startValue:"START", endValue:"END", timeline:.timeline}' /tmp/sync.json)"
+```
+
+不使用 jq 时，也可把上一步响应里的 `timeline` 数组原样粘进请求体。Node 调用示例：
+
+```js
+const sync = await fetch('http://localhost:8080/api/sync', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ devices }), // devices 结构同页面提交
+}).then((r) => r.json());
+
+const pair = await fetch('http://localhost:8080/api/operation-duration', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    linkField: 'opId',
+    statusField: 'phase',
+    startValue: 'START',
+    endValue: 'END',
+    timeline: sync.timeline, // 复用既有合并结果
+  }),
+}).then((r) => r.json());
+
+for (const g of pair.groups) {
+  if (g.status === 'paired') {
+    console.log(g.linkValue, `${g.durationMinMs} ~ ${g.durationMaxMs} ms`, g.crossDevice ? '(跨设备)' : '');
+  } else {
+    console.log(g.linkValue, g.status); // unpaired / ambiguous / conflict
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "params": { "linkField": "opId", "statusField": "phase", "startValue": "START", "endValue": "END" },
+  "scanned": 3,
+  "skipped": 1,
+  "skippedMissingField": 0,
+  "skippedStatusMismatch": 1,
+  "counts": { "paired": 1, "unpaired": 0, "ambiguous": 0, "conflict": 0 },
+  "groups": [
+    {
+      "linkValue": "J-1",
+      "status": "paired",
+      "startCount": 1,
+      "endCount": 1,
+      "start": { "device": "switch-A", "correctedEarliest": 1789984806900, "correctedLatest": 1789984807100, "...": "..." },
+      "end":   { "device": "switch-A", "correctedEarliest": 1789984926900, "correctedLatest": 1789984927100, "...": "..." },
+      "durationMinMs": 119800,
+      "durationMaxMs": 120200,
+      "crossDevice": false
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `groups[].status`：`paired` 已配对；`unpaired` 未配对（缺开始或结束一端）；
+  `ambiguous` 歧义（任一端出现多条）；`conflict` 时间冲突（结束最晚早于开始最早）。
+  只有 `paired` 输出时长。
+- 耗时范围（毫秒）：`durationMinMs = max(0, end.correctedEarliest − start.correctedLatest)`，
+  `durationMaxMs = end.correctedLatest − start.correctedEarliest`；区间相交时
+  `durationMinMs` 为 0。`unpaired` / `ambiguous` / `conflict` 时两者均为 `null`。
+- `startCount` / `endCount` 为该关联值下开始、结束事件条数；`crossDevice` 表示
+  开始与结束是否来自不同设备。
+- `skippedMissingField`（缺关联或状态字段）与 `skippedStatusMismatch`（状态值
+  既不是开始也不是结束）分类计数，合计为 `skipped`；这些事件不参与分组。
+- 关联字段名/状态字段名为空（或非字符串）、状态值缺失、两状态值相同时返回
+  `400` 及中文错误说明，调用方不应替换已展示的上次分析结果。

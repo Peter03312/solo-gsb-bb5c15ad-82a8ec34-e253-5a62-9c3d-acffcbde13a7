@@ -8,6 +8,8 @@ const {
   toJsonl,
   normalizeWindow,
   classifyWindow,
+  normalizePairingParams,
+  analyzeOperationPairs,
   AUTO_TIME_FIELDS,
 } = require('./lib/timesync');
 
@@ -109,6 +111,28 @@ app.post('/api/window-search', (req, res) => {
     counts,
     classes: results.map((r) => r.windowClass),
   });
+});
+
+/**
+ * POST /api/operation-duration
+ * body: { linkField, statusField, startValue, endValue, timeline }
+ * 操作配对分析：在 /api/sync 产出的时间线上，按关联字段把同一次操作的开始/结束事件
+ * 配对，用两端的校正区间求跨设备耗时范围（最短/最长，毫秒）。
+ * 字段名空缺或开始/结束状态值相同时返回 400 及中文错误，调用方不应改动上次分析结果。
+ * 缺字段或状态不匹配的事件跳过并计数；未配对、歧义、时间冲突的组不输出时长。
+ */
+app.post('/api/operation-duration', (req, res) => {
+  const body = req.body || {};
+  let params;
+  try {
+    params = normalizePairingParams(body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  const timeline = Array.isArray(body.timeline) ? body.timeline : [];
+  const result = analyzeOperationPairs(timeline, params);
+  result.params = params;
+  res.json(result);
 });
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, autoTimeFields: AUTO_TIME_FIELDS }));

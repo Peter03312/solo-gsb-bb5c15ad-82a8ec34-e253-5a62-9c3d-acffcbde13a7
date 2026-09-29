@@ -240,6 +240,42 @@ td.range-cell .muted { font-size: 0.72rem; }
 
 body.compact .col-raw { display: none; }
 
+.pairing {
+  margin-top: 1.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--border);
+}
+.pairing h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+.pairing-hint { color: var(--muted); font-size: 0.82rem; margin: 0 0 0.8rem; line-height: 1.6; }
+.pairing-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.pair-field { display: flex; flex-direction: column; gap: 0.3rem; }
+.pair-field > span { font-size: 0.78rem; color: var(--muted); }
+.pair-field input[type="text"] { width: 190px; }
+
+#pair-table td, #pair-table th { white-space: normal; vertical-align: top; }
+#pair-table .pair-key { font-family: Consolas, monospace; word-break: break-all; }
+#pair-table .pair-interval {
+  font-family: Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#pair-table .pair-interval .dev { color: var(--text); }
+#pair-table .dur-paired { color: var(--ok); font-family: Consolas, monospace; }
+#pair-table .dur-none { color: var(--muted); font-size: 0.8rem; }
+#pair-table .skip-cell { text-align: center; }
+.badge-paired { background: rgba(63, 185, 80, 0.15); color: var(--ok); }
+.badge-unpaired { background: rgba(139, 151, 173, 0.2); color: var(--muted); }
+.badge-ambiguous { background: rgba(210, 153, 34, 0.2); color: var(--warn); }
+.badge-conflict { background: rgba(229, 83, 75, 0.2); color: var(--danger); }
+.badge-cross { background: rgba(79, 140, 255, 0.2); color: var(--accent); margin-left: 0.3rem; }
+
 @media (max-width: 720px) {
   main, header { padding-left: 1rem; padding-right: 1rem; }
 }

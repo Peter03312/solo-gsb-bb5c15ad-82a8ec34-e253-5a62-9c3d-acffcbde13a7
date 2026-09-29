@@ -75,6 +75,53 @@
           <tbody id="timeline-body"></tbody>
         </table>
       </div>
+
+      <div class="pairing">
+        <h3>操作配对 / 跨设备耗时</h3>
+        <p class="pairing-hint">
+          输入事件中的<strong>关联字段名</strong>、<strong>状态字段名</strong>及<strong>开始 / 结束状态值</strong>：
+          系统按关联值分组，同组恰有一条开始和一条结束才配对（缺一端标“未配对”，任一端重复标“歧义”，
+          结束区间整体早于开始标“时间冲突”，均不输出时长）；配对后按两端校正区间求耗时
+          <strong>最短 = max(0, 结束最早 − 开始最晚)</strong>、<strong>最长 = 结束最晚 − 开始最早</strong>，
+          区间相交时最短保留为 0。缺字段或状态不匹配的事件跳过并计数。
+        </p>
+        <div class="pairing-form">
+          <label class="pair-field">
+            <span>关联字段名</span>
+            <input id="pair-link-field" type="text" placeholder="如 opId" spellcheck="false" />
+          </label>
+          <label class="pair-field">
+            <span>状态字段名</span>
+            <input id="pair-status-field" type="text" placeholder="如 phase" spellcheck="false" />
+          </label>
+          <label class="pair-field">
+            <span>开始状态值</span>
+            <input id="pair-start-value" type="text" placeholder="如 START" spellcheck="false" />
+          </label>
+          <label class="pair-field">
+            <span>结束状态值</span>
+            <input id="pair-end-value" type="text" placeholder="如 END" spellcheck="false" />
+          </label>
+          <button id="btn-pair-analyze" class="btn btn-primary" type="button">分析配对</button>
+          <button id="btn-pair-clear" class="btn btn-secondary" type="button">清除</button>
+          <span id="pair-status" class="status"></span>
+        </div>
+        <div id="pair-summary" class="window-counts hidden"></div>
+        <div class="table-wrap">
+          <table id="pair-table">
+            <thead>
+              <tr>
+                <th>关联值</th>
+                <th>状态</th>
+                <th>开始（设备 / 校正区间）</th>
+                <th>结束（设备 / 校正区间）</th>
+                <th>耗时范围（毫秒）</th>
+              </tr>
+            </thead>
+            <tbody id="pair-body"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
   </main>
 
